@@ -1,0 +1,4 @@
+duckdb
+sentence-transformers
+tqdm
+python-dotenv
