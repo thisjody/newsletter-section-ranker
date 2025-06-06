@@ -33,3 +33,8 @@ dump-cluster-json: check-env
 inspect: check-env
 	@echo "👁️ Inspecting candidate-section match results..."
 	python inspect_matches.py
+
+run-dashboard: check-env
+	@echo "🚀 Launching Streamlit dashboard..."
+	streamlit run candidate_db.py
+
