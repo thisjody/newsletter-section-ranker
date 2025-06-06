@@ -2,3 +2,5 @@ duckdb
 sentence-transformers
 tqdm
 python-dotenv
+scikit-learn>=1.3
+
