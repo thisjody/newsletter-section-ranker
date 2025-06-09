@@ -1,8 +1,7 @@
 #!/usr/bin/env python
 """
-Annotate candidate articles with best-matching sections based on cosine distance,
-and optionally dump per-section match results as JSON files.
-Supports idempotent runs by overwriting prior outputs.
+Annotate candidate articles with best-matching sections based on single centroid distance,
+dumping per-section match results as JSON files and saving results to DuckDB.
 """
 
 import duckdb
@@ -12,96 +11,104 @@ import os
 import dotenv
 from pathlib import Path
 from collections import defaultdict
+from tqdm import tqdm  # ✅ Added for progress bar
 
+# Load environment variables
 dotenv.load_dotenv()
 
 DUCKDB_PATH = os.getenv("DUCKDB_PATH", "data/newsletter_embeddings.duckdb")
 MATCH_TABLE = os.getenv("MATCH_TABLE", "candidate_section_matches")
-DEFAULT_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", 0.40))
-DEFAULT_TOP_K = int(os.getenv("TOP_K_MATCHES", 3))
+CANDIDATE_TABLE = os.getenv("CANDIDATE_TABLE", "link_embeddings")
+FINGERPRINT_TABLE = os.getenv("FINGERPRINT_TABLE", "section_fingerprints")
 DEFAULT_OUTPUT_DIR = os.getenv("SECTION_JSON_OUTPUT_DIR", "section_matches")
 SUMMARY_CHAR_LIMIT = int(os.getenv("SUMMARY_CHAR_LIMIT", 280))
+TOP_K = int(os.getenv("TOP_K_MATCHES", 5))
+SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", 0.35))
 
-def annotate_candidates(similarity_threshold=DEFAULT_THRESHOLD, top_k=DEFAULT_TOP_K, ranked_output=True, dump_json=None, per_section_json_dir=None):
-    con = duckdb.connect(DUCKDB_PATH)
-    con.execute("LOAD 'vss'")
+# Parse command-line arguments
+parser = argparse.ArgumentParser()
+parser.add_argument("--per_section_json_dir", type=str, default=None)
+args = parser.parse_args()
 
-    query = f"""
-        WITH ranked_matches AS (
-            SELECT
-                c.id AS candidate_id,
-                s.section AS matched_section,
-                list_cosine_distance(c.embedding, s.embedding) AS cosine_distance,
-                ROW_NUMBER() OVER (
-                    PARTITION BY c.id
-                    ORDER BY list_cosine_distance(c.embedding, s.embedding)
-                ) AS rnk
-            FROM link_embeddings c, section_fingerprints s
-            WHERE c.section = 'CANDIDATE'
-              AND s.section != 'CANDIDATE'
-              AND list_cosine_distance(c.embedding, s.embedding) <= {similarity_threshold}
-        )
-        SELECT candidate_id, matched_section, cosine_distance
-        FROM ranked_matches
-        WHERE rnk <= {top_k}
-        ORDER BY candidate_id, rnk
-    """
+# Set output directory
+OUTPUT_DIR = args.per_section_json_dir or DEFAULT_OUTPUT_DIR
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+for f in Path(OUTPUT_DIR).glob("*.json"):
+    f.unlink()
 
-    results = con.execute(query).fetchall()
+# Connect to DuckDB
+con = duckdb.connect(DUCKDB_PATH, config={"enable_external_access": True})
+con.execute("LOAD 'vss'")
 
-    if per_section_json_dir:
-        output_dir = Path(per_section_json_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+# Load candidates and section fingerprints
+candidates = con.execute(f"""
+    SELECT id, url, filename, content, embedding
+    FROM {CANDIDATE_TABLE}
+    WHERE section = 'CANDIDATE'
+""").fetchall()
 
-        # Clear old JSONs to ensure idempotence
-        for old_file in output_dir.glob("*.json"):
-            old_file.unlink()
+sections = con.execute(f"""
+    SELECT section, embedding
+    FROM {FINGERPRINT_TABLE}
+    WHERE section != 'CANDIDATE'
+""").fetchall()
 
-        matches_by_section = defaultdict(list)
+# Match candidates to sections
+matches_by_section = defaultdict(list)
 
-        for row in results:
-            candidate_id, section, distance = row
-            row_meta = con.execute(
-                "SELECT url, filename, content FROM link_embeddings WHERE id = ?",
-                [candidate_id]
-            ).fetchone()
-
-            url, filename, content = row_meta
+for cand_id, url, filename, content, cand_emb in tqdm(candidates, desc="📊 Processing matches"):
+    if cand_emb is None:
+        continue
+    for section, sec_emb in sections:
+        dist = con.execute("SELECT list_cosine_distance(?, ?)", [cand_emb, sec_emb]).fetchone()[0]
+        if dist <= SIMILARITY_THRESHOLD:
             summary = (content or "").strip().replace("\n", " ")[:SUMMARY_CHAR_LIMIT] + "…" if content else ""
-
             matches_by_section[section].append({
-                "candidate_id": candidate_id,
+                "candidate_id": cand_id,
                 "url": url,
                 "filename": filename,
-                "cosine_distance": round(distance, 4),
+                "cosine_distance": round(dist, 4),
                 "summary": summary
             })
 
-        for section, matches in matches_by_section.items():
-            sorted_matches = sorted(matches, key=lambda m: m["cosine_distance"])
-            output_path = output_dir / f"{section.lower()}.json"
-            with open(output_path, "w") as f:
-                json.dump(sorted_matches, f, indent=2)
-            print(f"📝 Wrote {len(sorted_matches)} matches to {output_path}")
-        return
+# Write JSON files
+for section, matches in matches_by_section.items():
+    sorted_matches = sorted(matches, key=lambda m: m["cosine_distance"])[:TOP_K]
+    with open(Path(OUTPUT_DIR) / f"{section.lower()}.json", "w") as f:
+        json.dump(sorted_matches, f, indent=2)
+    print(f"📝 Wrote {len(sorted_matches)} matches to {section.lower()}.json")
 
-    # Fallback to print output if not dumping
-    print(f"🔍 Showing top {top_k} matches per candidate (threshold={similarity_threshold}):")
-    for r in results:
-        print(r)
-    print(f"✅ Returned {len(results)} matches")
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--similarity_threshold", type=float, default=DEFAULT_THRESHOLD)
-    parser.add_argument("--top_k", type=int, default=DEFAULT_TOP_K)
-    parser.add_argument("--per_section_json_dir", type=str, default=None)
-
-    args = parser.parse_args()
-
-    annotate_candidates(
-        similarity_threshold=args.similarity_threshold,
-        top_k=args.top_k,
-        per_section_json_dir=args.per_section_json_dir
+# Save results to DuckDB
+print(f"💾 Saving single centroid matches to table: {MATCH_TABLE}")
+con.execute(f"DROP TABLE IF EXISTS {MATCH_TABLE}")
+con.execute(f"""
+    CREATE TABLE {MATCH_TABLE} (
+        candidate_id TEXT,
+        section TEXT,
+        cosine_distance DOUBLE,
+        url TEXT,
+        filename TEXT,
+        summary TEXT
     )
+""")
 
+insert_rows = [
+    (
+        m["candidate_id"],
+        section,
+        m["cosine_distance"],
+        m["url"],
+        m["filename"],
+        m["summary"]
+    )
+    for section, matches in matches_by_section.items()
+    for m in matches
+]
+
+con.executemany(f"""
+    INSERT INTO {MATCH_TABLE} (
+        candidate_id, section, cosine_distance, url, filename, summary
+    ) VALUES (?, ?, ?, ?, ?, ?)
+""", insert_rows)
+
+print(f"✅ Inserted {len(insert_rows)} rows into {MATCH_TABLE}")
