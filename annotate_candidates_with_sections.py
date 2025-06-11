@@ -11,7 +11,7 @@ import os
 import dotenv
 from pathlib import Path
 from collections import defaultdict
-from tqdm import tqdm  # ✅ Added for progress bar
+from tqdm import tqdm
 
 # Load environment variables
 dotenv.load_dotenv()
@@ -64,7 +64,7 @@ for cand_id, url, filename, content, cand_emb in tqdm(candidates, desc="📊 Pro
         if dist <= SIMILARITY_THRESHOLD:
             summary = (content or "").strip().replace("\n", " ")[:SUMMARY_CHAR_LIMIT] + "…" if content else ""
             matches_by_section[section].append({
-                "candidate_id": cand_id,
+                "id": cand_id,
                 "url": url,
                 "filename": filename,
                 "cosine_distance": round(dist, 4),
@@ -83,7 +83,7 @@ print(f"💾 Saving single centroid matches to table: {MATCH_TABLE}")
 con.execute(f"DROP TABLE IF EXISTS {MATCH_TABLE}")
 con.execute(f"""
     CREATE TABLE {MATCH_TABLE} (
-        candidate_id TEXT,
+        id TEXT,
         section TEXT,
         cosine_distance DOUBLE,
         url TEXT,
@@ -94,7 +94,7 @@ con.execute(f"""
 
 insert_rows = [
     (
-        m["candidate_id"],
+        m["id"],
         section,
         m["cosine_distance"],
         m["url"],
@@ -107,7 +107,7 @@ insert_rows = [
 
 con.executemany(f"""
     INSERT INTO {MATCH_TABLE} (
-        candidate_id, section, cosine_distance, url, filename, summary
+        id, section, cosine_distance, url, filename, summary
     ) VALUES (?, ?, ?, ?, ?, ?)
 """, insert_rows)
 

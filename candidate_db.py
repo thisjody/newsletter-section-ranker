@@ -1,5 +1,4 @@
-#!/usr/bin/env python
-# cluster_dashboard.py
+#!/usr/bin/env python3
 
 import os
 import json
@@ -7,42 +6,83 @@ import streamlit as st
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables from .env
+# Load environment variables
 load_dotenv()
 
-# Match directories configured via environment
+# Match directories from environment
 SINGLE_DIR = os.getenv("SECTION_JSON_OUTPUT_DIR", "section_matches")
 CLUSTER_DIR = os.getenv("CLUSTER_JSON_OUTPUT_DIR", "section_cluster_matches")
+SUMMARY_PATH = Path("summaries/summarized_candidates.json")
 
 # Streamlit page setup
 st.set_page_config(page_title="Newsletter Section Matches", layout="wide")
-st.title("📚 Newsletter Section Matches")
+st.title("📚 Newsletter Section Review Tool")
 
-# Toggle between single-centroid and clustered views
-mode = st.radio("🧠 Match Mode", ["Single Centroid", "Clustered"], horizontal=True)
-MATCH_DIR = SINGLE_DIR if mode == "Single Centroid" else CLUSTER_DIR
+# Tabbed interface
+tab1, tab2 = st.tabs(["🧠 Section Matches", "📝 Summarized Candidates"])
 
-# Gather section match files
-section_files = sorted(Path(MATCH_DIR).glob("*.json"))
-if not section_files:
-    st.warning(f"No match files found in `{MATCH_DIR}`")
-    st.stop()
+with tab1:
+    # Toggle between match modes
+    mode = st.radio("📊 Match Mode", ["Single Centroid", "Clustered"], horizontal=True)
+    MATCH_DIR = SINGLE_DIR if mode == "Single Centroid" else CLUSTER_DIR
+    MODE_DIR = "single" if mode == "Single Centroid" else "clustered"
 
-section = st.selectbox("🗂️ Select Section", [f.stem.upper() for f in section_files])
-file_path = next(f for f in section_files if f.stem.upper() == section)
+    # Gather available match files
+    section_files = sorted(Path(MATCH_DIR).glob("*.json"))
+    if not section_files:
+        st.warning(f"No match files found in `{MATCH_DIR}`")
+        st.stop()
 
-# Load and render matches
-with open(file_path) as f:
-    matches = json.load(f)
+    # Section selection
+    section = st.selectbox("🗂️ Select Section", [f.stem.upper() for f in section_files])
+    file_path = next(f for f in section_files if f.stem.upper() == section)
 
-st.subheader(f"Top {len(matches)} {mode.lower()} matches for: `{section}`")
+    with open(file_path) as f:
+        matches = json.load(f)
 
-for m in matches:
-    st.markdown("---")
-    if mode == "Clustered":
-        st.markdown(f"**Distance**: {m['cosine_distance']} | **Cluster**: {m['cluster_id']}")
+    st.subheader(f"Top {len(matches)} {mode.lower()} matches for: `{section}`")
+
+    selected_ids = []
+
+    for m in matches:
+        st.markdown("---")
+        if mode == "Clustered":
+            st.markdown(f"**Distance**: {m.get('cosine_distance', '?')} | **Cluster**: {m.get('cluster_id', '?')}")
+        else:
+            st.markdown(f"**Distance**: {m.get('cosine_distance', '?')}")
+
+        st.markdown(f"[🔗 {m.get('url', 'URL missing')}]({m.get('url', '')})")
+        st.code(m.get("summary", "No summary available"), language="html")
+
+        candidate_id = m.get("id")
+        if candidate_id:
+            if st.checkbox("✅ Select this article", key=f"{MODE_DIR}_{section}_{candidate_id}"):
+                selected_ids.append(candidate_id)
+
+    # Handle export
+    if st.button("📤 Export selected IDs for this section"):
+        export_path = Path("selected_ids") / MODE_DIR / f"{section}.json"
+        export_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(export_path, "w") as f:
+            json.dump(selected_ids, f, indent=2)
+        st.success(f"Exported {len(selected_ids)} IDs → `{export_path}`")
+
+with tab2:
+    st.subheader("📝 Summarized Candidate Articles")
+
+    if not SUMMARY_PATH.exists():
+        st.info("No summaries found yet. Run summarization first.")
     else:
-        st.markdown(f"**Distance**: {m['cosine_distance']}")
-    st.markdown(f"[🔗 {m['url']}]({m['url']})")
-    st.code(m["summary"], language="html")
+        try:
+            with open(SUMMARY_PATH) as f:
+                summaries = json.load(f)
+
+            for entry in summaries:
+                st.markdown("---")
+                st.markdown(f"**📰 {entry.get('title', '[No title]')}**")
+                st.markdown(f"[🔗 {entry.get('url', 'URL missing')}]({entry.get('url', '')})")
+                st.markdown(f"**📚 Section**: `{entry.get('section', '?')}`")
+                st.markdown(entry.get("summary", "No summary available"))
+        except Exception as e:
+            st.error(f"Failed to load summaries: {e}")
 

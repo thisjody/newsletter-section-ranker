@@ -75,7 +75,7 @@ for cand_id, url, filename, content, cand_emb in tqdm(candidates, desc="📊 Pro
         if len(matches_by_section[section]) < TOP_K or cosine_dist < max(m["cosine_distance"] for m in matches_by_section[section]):
             summary = (content or "").strip().replace("\n", " ")[:SUMMARY_CHAR_LIMIT] + "…" if content else ""
             matches_by_section[section].append({
-                "candidate_id": cand_id,
+                "id": cand_id,
                 "url": url,
                 "filename": filename,
                 "cluster_id": cluster_id,
@@ -100,7 +100,7 @@ print(f"💾 Saving clustered matches to table: candidate_cluster_section_matche
 con.execute("DROP TABLE IF EXISTS candidate_cluster_section_matches")
 con.execute("""
     CREATE TABLE candidate_cluster_section_matches (
-        candidate_id TEXT,
+        id TEXT,
         section TEXT,
         cluster_id INTEGER,
         cosine_distance DOUBLE,
@@ -112,7 +112,7 @@ con.execute("""
 
 insert_rows = [
     (
-        m["candidate_id"],
+        m["id"],
         section,
         m["cluster_id"],
         m["cosine_distance"],
@@ -126,8 +126,7 @@ insert_rows = [
 
 con.executemany("""
     INSERT INTO candidate_cluster_section_matches (
-        candidate_id, section, cluster_id, cosine_distance, url, filename, summary
+        id, section, cluster_id, cosine_distance, url, filename, summary
     ) VALUES (?, ?, ?, ?, ?, ?, ?)
 """, insert_rows)
 print(f"✅ Inserted {len(insert_rows)} rows into candidate_cluster_section_matches")
-

@@ -1,7 +1,18 @@
-duckdb
-sentence-transformers
-tqdm
-python-dotenv
-scikit-learn>=1.3
-streamlit>=1.30.0
+
+# Core Google + GenAI
+google-generativeai==0.4.1
+google-cloud-aiplatform==1.48.0
+google-api-core>=2.17.0
+
+# Embeddings / VSS
+duckdb>=0.10.0
+sentence-transformers>=2.2.2
+scikit-learn>=1.3.0
+
+# CLI + Runtime
+tqdm>=4.66.0
+python-dotenv>=1.0.0
+streamlit==1.32.2  # Known to work well with GenAI projects
+
+
 

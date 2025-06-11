@@ -34,6 +34,10 @@ inspect: check-env
 	@echo "👁️ Inspecting candidate-section match results..."
 	python inspect_matches.py
 
+summarize-selected: check-env
+	@echo "📝 Summarizing selected candidates..."
+	python summarize_selected_candidates.py
+
 run-dashboard: check-env
 	@echo "🚀 Launching Streamlit dashboard..."
 	streamlit run candidate_db.py
