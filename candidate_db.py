@@ -12,7 +12,8 @@ load_dotenv()
 # Match directories from environment
 SINGLE_DIR = os.getenv("SECTION_JSON_OUTPUT_DIR", "section_matches")
 CLUSTER_DIR = os.getenv("CLUSTER_JSON_OUTPUT_DIR", "section_cluster_matches")
-SUMMARY_PATH = Path("summaries/summarized_candidates.json")
+SUMMARY_SINGLE = Path("summaries/summarized_candidates.json")
+SUMMARY_CLUSTER = Path("summaries/summarized_candidates_cluster.json")
 
 # Streamlit page setup
 st.set_page_config(page_title="Newsletter Section Matches", layout="wide")
@@ -70,16 +71,19 @@ with tab1:
 with tab2:
     st.subheader("📝 Summarized Candidate Articles")
 
-    if not SUMMARY_PATH.exists():
-        st.info("No summaries found yet. Run summarization first.")
+    # Choose which summary file to display
+    summary_mode = st.radio("🧮 View Summaries From", ["Single Centroid", "Clustered"], horizontal=True)
+    summary_path = SUMMARY_SINGLE if summary_mode == "Single Centroid" else SUMMARY_CLUSTER
+
+    if not summary_path.exists():
+        st.info(f"No summaries found yet for `{summary_mode}` mode. Run summarization first.")
     else:
         try:
-            with open(SUMMARY_PATH) as f:
+            with open(summary_path) as f:
                 summaries = json.load(f)
 
             for entry in summaries:
                 st.markdown("---")
-                st.markdown(f"**📰 {entry.get('title', '[No title]')}**")
                 st.markdown(f"[🔗 {entry.get('url', 'URL missing')}]({entry.get('url', '')})")
                 st.markdown(f"**📚 Section**: `{entry.get('section', '?')}`")
                 st.markdown(entry.get("summary", "No summary available"))
