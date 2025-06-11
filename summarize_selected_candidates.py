@@ -6,7 +6,8 @@ import duckdb
 from pathlib import Path
 from tqdm import tqdm
 from dotenv import load_dotenv
-from google.api_core.exceptions import PermissionDenied, NotFound
+from google.api_core.exceptions import PermissionDenied, NotFound, ServiceUnavailable
+import google.generativeai as genai
 
 # Load environment variables
 load_dotenv()
@@ -21,25 +22,27 @@ SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "gemini-2.0-flash")
 CHAR_LIMIT = int(os.getenv("SUMMARY_CHAR_LIMIT", "280"))
 
 DUCKDB_PATH = os.getenv("DUCKDB_PATH", "data/newsletter_embeddings.duckdb")
-CANDIDATE_TABLE = os.getenv("MATCH_TABLE", "candidate_section_matches")
-
 SINGLE_DIR = Path(os.getenv("SELECTED_IDS_SINGLE_DIR", "selected_ids/single"))
 CLUSTERED_DIR = Path(os.getenv("SELECTED_IDS_CLUSTERED_DIR", "selected_ids/clustered"))
+
 OUT_SINGLE = Path("summaries/summarized_candidates.json")
 OUT_CLUSTER = Path("summaries/summarized_candidates_cluster.json")
-
 for p in [OUT_SINGLE.parent, OUT_CLUSTER.parent]:
     p.mkdir(parents=True, exist_ok=True)
 
-# Vertex or Public Gemini initialization
+# Initialize LLM model
+llm_model = None
 if USE_VERTEX:
-    from vertexai import init as vertexai_init
-    from vertexai.generative_models import GenerativeModel, Part
-    vertexai_init(project=PROJECT_ID, location=LOCATION, credentials=CREDENTIALS_PATH)
+    if not PROJECT_ID or not LOCATION:
+        raise ValueError("Vertex mode requires GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION to be set.")
+    llm_model = genai.GenerativeModel(model_name=SUMMARY_MODEL)
+    print(f"LLM initialized via Vertex AI: {SUMMARY_MODEL} @ {PROJECT_ID}/{LOCATION}")
 else:
-    from google.generativeai import configure as genai_configure
-    from google.generativeai import GenerativeModel
-    genai_configure(api_key=GOOGLE_API_KEY)
+    if not GOOGLE_API_KEY:
+        raise ValueError("Public mode requires GOOGLE_API_KEY to be set.")
+    genai.configure(api_key=GOOGLE_API_KEY)
+    llm_model = genai.GenerativeModel(model_name=SUMMARY_MODEL)
+    print(f"LLM initialized via Public API: {SUMMARY_MODEL}")
 
 def fetch_candidate_content(article_id):
     con = duckdb.connect(DUCKDB_PATH)
@@ -50,17 +53,19 @@ def fetch_candidate_content(article_id):
     return row if row else None
 
 def generate_summary(text):
+    global llm_model
+    prompt = f"Summarize this in {CHAR_LIMIT} characters or less:\n{text}"
     try:
-        model = GenerativeModel(SUMMARY_MODEL)
-        prompt = f"Summarize this in {CHAR_LIMIT} characters or less:\n{text}"
-        response = model.generate_content([Part.from_text(prompt)] if USE_VERTEX else prompt)
+        response = llm_model.generate_content(prompt)
         return response.text.strip()
-    except (PermissionDenied, NotFound) as e:
+    except (PermissionDenied, NotFound, ServiceUnavailable) as e:
+        print(f"[API ERROR: {type(e).__name__}] {e.message}")
         return f"[ERROR: {e.message}]"
     except Exception as e:
+        print(f"[ERROR: Unexpected failure] {e}")
         return f"[ERROR: Unexpected failure: {e}]"
 
-def summarize_batch(directory: Path) -> list[dict]:
+def summarize_batch(directory: Path, mode: str) -> list[dict]:
     summaries = []
     for path in sorted(directory.glob("*.json")):
         section = path.stem.upper()
@@ -71,7 +76,7 @@ def summarize_batch(directory: Path) -> list[dict]:
             print(f"⚠️ Error reading {path}: {e}")
             continue
 
-        for aid in tqdm(ids, desc=f"Summarizing {section}", unit="article"):
+        for aid in tqdm(ids, desc=f"{mode.upper()} → {section}", unit="article"):
             row = fetch_candidate_content(aid)
             if not row:
                 continue
@@ -81,22 +86,23 @@ def summarize_batch(directory: Path) -> list[dict]:
                 "id": article_id,
                 "url": url,
                 "section": section,
+                "mode": mode,
                 "summary": summary
             })
     return summaries
 
 def main():
-    print("🔁 Starting summarization for SINGLE...")
-    single_summaries = summarize_batch(SINGLE_DIR)
+    print("🔁 Summarizing SINGLE selections...")
+    single = summarize_batch(SINGLE_DIR, mode="single")
     with open(OUT_SINGLE, "w") as f:
-        json.dump(single_summaries, f, indent=2)
-    print(f"✅ Wrote {len(single_summaries)} single summaries → {OUT_SINGLE}")
+        json.dump(single, f, indent=2)
+    print(f"✅ Saved {len(single)} summaries to {OUT_SINGLE}")
 
-    print("🔁 Starting summarization for CLUSTER...")
-    cluster_summaries = summarize_batch(CLUSTERED_DIR)
+    print("🔁 Summarizing CLUSTERED selections...")
+    cluster = summarize_batch(CLUSTERED_DIR, mode="clustered")
     with open(OUT_CLUSTER, "w") as f:
-        json.dump(cluster_summaries, f, indent=2)
-    print(f"✅ Wrote {len(cluster_summaries)} cluster summaries → {OUT_CLUSTER}")
+        json.dump(cluster, f, indent=2)
+    print(f"✅ Saved {len(cluster)} summaries to {OUT_CLUSTER}")
 
 if __name__ == "__main__":
     main()
